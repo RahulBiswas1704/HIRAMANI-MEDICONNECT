@@ -17,10 +17,12 @@ import {
   ExternalLink,
   ShieldCheck,
   Sparkles,
+  QrCode,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { name: 'Dashboard Overview', href: '/dashboard', icon: LayoutDashboard },
+  { name: 'WhatsApp Web (QR)', href: '/dashboard/whatsapp-web', icon: QrCode },
   { name: 'Appointments', href: '/dashboard/appointments', icon: CalendarDays },
   { name: 'Doctors & OPD', href: '/dashboard/doctors', icon: UserRoundCheck },
   { name: 'Departments', href: '/dashboard/departments', icon: Building2 },

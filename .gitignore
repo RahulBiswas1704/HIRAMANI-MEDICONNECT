@@ -32,3 +32,7 @@ next-env.d.ts
 
 # netlify
 .netlify/
+
+# whatsapp web baileys sessions
+.baileys_auth/
+baileys_store.json
