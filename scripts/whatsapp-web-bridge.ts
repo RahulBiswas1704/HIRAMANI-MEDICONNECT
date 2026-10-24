@@ -1,6 +1,8 @@
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  Browsers,
   WAMessage,
 } from '@whiskeysockets/baileys';
 import qrcodeTerminal from 'qrcode-terminal';
@@ -12,6 +14,7 @@ import { BotEngine } from '../src/lib/bot/engine';
 
 const AUTH_DIR = path.resolve(process.cwd(), '.baileys_auth');
 const STATUS_FILE = path.resolve(AUTH_DIR, 'status.json');
+const REQUEST_FILE = path.resolve(AUTH_DIR, 'pairing_request.json');
 
 // Ensure auth directory exists
 if (!fs.existsSync(AUTH_DIR)) {
@@ -29,27 +32,80 @@ function updateStatus(statusData: Record<string, any>) {
   }
 }
 
+// Parse optional --phone=<number> command line argument
+const phoneArg = process.argv.find((arg) => arg.startsWith('--phone='));
+let targetPhoneNumber = phoneArg ? phoneArg.replace('--phone=', '').replace(/\D/g, '') : '';
+
 async function startWhatsAppWebBridge() {
   console.log('\n=============================================================');
-  console.log('🏥 HIRAMANI MEMORIAL HOSPITAL — WHATSAPP WEB QR BRIDGE');
-  console.log('Connecting hospital conversational engine to WhatsApp Web...');
+  console.log('🏥 HIRAMANI MEMORIAL HOSPITAL — WHATSAPP WEB BRIDGE');
+  console.log('Fetching official WhatsApp Web protocol version...');
   console.log('=============================================================\n');
+
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log(`Using WhatsApp Web Protocol v${version.join('.')}, isLatest: ${isLatest}`);
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
+  // Check if a pairing phone was requested via file
+  if (!targetPhoneNumber && fs.existsSync(REQUEST_FILE)) {
+    try {
+      const req = JSON.parse(fs.readFileSync(REQUEST_FILE, 'utf8'));
+      if (req.phone) {
+        targetPhoneNumber = req.phone.replace(/\D/g, '');
+      }
+    } catch (_) {}
+  }
+
+  const isPairingCodeMode = Boolean(targetPhoneNumber && !state.creds.registered);
+
   const sock = makeWASocket({
+    version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: false, // We render manually with qrcode-terminal for superior formatting
-    browser: ['Hiramani Hospital', 'Chrome', '1.0.0'],
+    printQRInTerminal: false,
+    // Use official macOS Desktop client identity to prevent "Couldn't link device" errors
+    browser: Browsers.macOS('Desktop'),
+    syncFullHistory: false,
+    connectTimeoutMs: 60_000,
+    defaultQueryTimeoutMs: 60_000,
+    keepAliveIntervalMs: 25_000,
+    generateHighQualityLinkPreview: true,
   });
 
   sock.ev.on('creds.update', saveCreds);
 
+  // If pairing code mode is requested and device not registered yet
+  if (isPairingCodeMode) {
+    setTimeout(async () => {
+      try {
+        console.log(`\n📲 Requesting 8-character Pairing Code for +${targetPhoneNumber}...`);
+        const code = await sock.requestPairingCode(targetPhoneNumber);
+        console.log('\n=============================================================');
+        console.log(`🔑 WHATSAPP PAIRING CODE: ${code}`);
+        console.log('=============================================================');
+        console.log('1. Open WhatsApp on your phone');
+        console.log('2. Tap Settings (or ⋮) -> Linked Devices -> Link a Device');
+        console.log('3. Tap "Link with phone number instead" at the bottom');
+        console.log(`4. Enter this 8-character code: ${code}`);
+        console.log('=============================================================\n');
+
+        updateStatus({
+          status: 'pairing_code',
+          pairingCode: code,
+          targetPhone: targetPhoneNumber,
+          message: `Enter code ${code} in WhatsApp on your phone`,
+        });
+      } catch (err) {
+        console.error('Failed to request pairing code:', err);
+      }
+    }, 3000);
+  }
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    if (qr && !isPairingCodeMode) {
       console.log('\n-------------------------------------------------------------');
       console.log('📱 SCAN THIS QR CODE WITH YOUR WHATSAPP MOBILE APP:');
       console.log('1. Open WhatsApp on your phone');
@@ -67,7 +123,7 @@ async function startWhatsAppWebBridge() {
           qrDataUrl,
           message: 'Please scan QR code using WhatsApp (Linked Devices)',
         });
-        console.log('\n🌐 Web view available at: http://localhost:3000/dashboard/whatsapp-web');
+        console.log('\n🌐 High-Res Web View: http://localhost:3000/dashboard/whatsapp-web');
       } catch (e) {
         console.error('Failed to generate QR data URL:', e);
       }
@@ -97,10 +153,15 @@ async function startWhatsAppWebBridge() {
     } else if (connection === 'open') {
       const userPhone = (sock.user?.id || '').replace(/:.*@/, '@');
       console.log('\n=============================================================');
-      console.log('✅ WHATSAPP WEB LINKED & ACTIVE!');
+      console.log('✅ WHATSAPP LINKED & ACTIVE FOR HIRAMANI MEMORIAL HOSPITAL!');
       console.log(`📱 Connected Account: ${sock.user?.name || 'Hiramani Hospital'} (${userPhone})`);
       console.log('🏥 Ready to receive patient messages and book appointments!');
       console.log('=============================================================\n');
+
+      // Clear any pending pairing request
+      if (fs.existsSync(REQUEST_FILE)) {
+        try { fs.unlinkSync(REQUEST_FILE); } catch (_) {}
+      }
 
       updateStatus({
         status: 'connected',
@@ -115,18 +176,15 @@ async function startWhatsAppWebBridge() {
     if (upsert.type !== 'notify') return;
 
     for (const msg of upsert.messages) {
-      // Ignore messages sent by the bot itself
       if (msg.key.fromMe) continue;
       if (!msg.message) continue;
 
       const remoteJid = msg.key.remoteJid || '';
 
-      // Ignore group chats, broadcast channels, and status updates
       if (remoteJid.endsWith('@g.us') || remoteJid.includes('broadcast')) {
         continue;
       }
 
-      // Extract text content from various WhatsApp message types
       const incomingText =
         msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
@@ -143,7 +201,6 @@ async function startWhatsAppWebBridge() {
       console.log(`   Message: "${incomingText.trim()}"`);
 
       try {
-        // Send message to our Hiramani Memorial Hospital Bot Engine
         const reply = await BotEngine.processMessage(cleanPhone, incomingText);
 
         console.log(`📤 [WhatsApp Web] Replying to +${cleanPhone}...`);
@@ -159,7 +216,6 @@ async function startWhatsAppWebBridge() {
   });
 }
 
-// Start the bridge
 startWhatsAppWebBridge().catch((err) => {
   console.error('Fatal WhatsApp Web bridge error:', err);
 });

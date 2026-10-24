@@ -12,14 +12,19 @@ import {
   Radio,
   ExternalLink,
   MessageSquare,
+  KeyRound,
+  Copy,
+  Check,
 } from 'lucide-react';
 import Link from 'next/link';
 
 interface BridgeStatus {
-  status: 'not_started' | 'scan_qr' | 'connected' | 'disconnected';
+  status: 'not_started' | 'scan_qr' | 'pairing_code' | 'connected' | 'disconnected';
   phone?: string;
   name?: string;
   qrDataUrl?: string;
+  pairingCode?: string;
+  targetPhone?: string;
   message?: string;
   updatedAt?: string;
 }
@@ -27,7 +32,10 @@ interface BridgeStatus {
 export default function WhatsAppWebPage() {
   const [status, setStatus] = useState<BridgeStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lastCheck, setLastCheck] = useState<Date>(new Date());
+  const [phoneInput, setPhoneInput] = useState('');
+  const [submittingPhone, setSubmittingPhone] = useState(false);
+  const [phoneMessage, setPhoneMessage] = useState('');
+  const [copied, setCopied] = useState(false);
 
   const fetchStatus = async () => {
     try {
@@ -40,15 +48,49 @@ export default function WhatsAppWebPage() {
       console.error('Failed to fetch status', e);
     } finally {
       setLoading(false);
-      setLastCheck(new Date());
     }
   };
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 3000);
+    const interval = setInterval(fetchStatus, 2500);
     return () => clearInterval(interval);
   }, []);
+
+  const handleRequestPairingCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!phoneInput.trim()) return;
+
+    setSubmittingPhone(true);
+    setPhoneMessage('');
+
+    try {
+      const res = await fetch('/api/whatsapp/web-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: phoneInput.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPhoneMessage('Code requested! It will appear below in 3-5 seconds.');
+        fetchStatus();
+      } else {
+        setPhoneMessage(data.error || 'Failed to request code');
+      }
+    } catch (err: any) {
+      setPhoneMessage(err?.message || 'Error sending request');
+    } finally {
+      setSubmittingPhone(false);
+    }
+  };
+
+  const copyPairingCode = () => {
+    if (status?.pairingCode) {
+      navigator.clipboard.writeText(status.pairingCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -57,14 +99,14 @@ export default function WhatsAppWebPage() {
         <div>
           <div className="flex items-center gap-2.5">
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              WhatsApp Web QR Connection
+              WhatsApp Web Connection
             </h1>
             <span className="bg-emerald-100 text-emerald-800 text-[11px] font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200">
               <Radio className="w-3 h-3 animate-pulse text-emerald-600" /> Live Bridge
             </span>
           </div>
           <p className="text-sm text-slate-500 mt-1">
-            Connect any physical WhatsApp number to Hiramani Memorial Hospital without needing a Meta Developer Account.
+            Connect your WhatsApp number to Hiramani Memorial Hospital instantly via QR Code or 8-digit Pairing Code.
           </p>
         </div>
 
@@ -131,6 +173,40 @@ export default function WhatsAppWebPage() {
             </Link>
           </div>
         </div>
+      ) : status?.status === 'pairing_code' && status.pairingCode ? (
+        <div className="bg-white rounded-2xl border-2 border-sky-500/50 p-8 shadow-sm">
+          <div className="max-w-lg mx-auto text-center space-y-4">
+            <div className="w-14 h-14 bg-sky-100 text-sky-700 rounded-full flex items-center justify-center mx-auto">
+              <KeyRound className="w-7 h-7" />
+            </div>
+
+            <h2 className="text-xl font-black text-slate-900">
+              Enter this 8-Character Pairing Code on Your Phone
+            </h2>
+
+            <p className="text-xs text-slate-600">
+              In WhatsApp, tap <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong> &gt; <strong>&quot;Link with phone number instead&quot;</strong> and enter this code:
+            </p>
+
+            <div className="bg-slate-900 text-white p-5 rounded-2xl flex items-center justify-center gap-4 shadow-inner">
+              <span className="font-mono text-3xl font-black tracking-widest text-emerald-400">
+                {status.pairingCode}
+              </span>
+              <button
+                onClick={copyPairingCode}
+                className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 transition"
+                title="Copy Code"
+              >
+                {copied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
+              </button>
+            </div>
+
+            <div className="text-[11px] text-slate-500 flex items-center justify-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+              Waiting for you to enter code on WhatsApp...
+            </div>
+          </div>
+        </div>
       ) : status?.status === 'scan_qr' && status.qrDataUrl ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-sm">
           <div className="grid md:grid-cols-2 gap-8 items-center">
@@ -148,51 +224,67 @@ export default function WhatsAppWebPage() {
                 />
               </div>
               <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500 font-medium">
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
-                Waiting for scan... auto-refreshes every 20s
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                Official macOS Desktop protocol active
               </div>
             </div>
 
-            {/* Right: Step-by-Step Instructions */}
+            {/* Right: Step-by-Step Instructions & Alternative Code Link */}
             <div className="space-y-4">
               <h2 className="text-lg font-bold text-slate-900">
-                How to link your phone:
+                How to link:
               </h2>
 
-              <ol className="space-y-3">
-                <li className="flex items-start gap-3 bg-white p-3.5 rounded-xl border border-slate-200">
-                  <div className="w-6 h-6 rounded-full bg-[#0e4a7b] text-white text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
+              <ol className="space-y-2.5">
+                <li className="flex items-start gap-3 bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-700">
+                  <span className="w-5 h-5 rounded-full bg-[#0e4a7b] text-white font-bold flex items-center justify-center flex-shrink-0">
                     1
-                  </div>
-                  <div className="text-xs text-slate-700">
-                    Open <strong className="font-semibold text-slate-900">WhatsApp</strong> on your mobile phone.
-                  </div>
+                  </span>
+                  <span>Open WhatsApp on your phone.</span>
                 </li>
 
-                <li className="flex items-start gap-3 bg-white p-3.5 rounded-xl border border-slate-200">
-                  <div className="w-6 h-6 rounded-full bg-[#0e4a7b] text-white text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
+                <li className="flex items-start gap-3 bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-700">
+                  <span className="w-5 h-5 rounded-full bg-[#0e4a7b] text-white font-bold flex items-center justify-center flex-shrink-0">
                     2
-                  </div>
-                  <div className="text-xs text-slate-700">
-                    Tap <strong className="font-semibold text-slate-900">Settings</strong> (iOS) or the <strong className="font-semibold text-slate-900">three dots ⋮</strong> (Android) and choose <strong className="font-semibold text-slate-900">Linked Devices</strong>.
-                  </div>
+                  </span>
+                  <span>Tap <strong>Settings</strong> or <strong>⋮</strong> &gt; <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong>.</span>
                 </li>
 
-                <li className="flex items-start gap-3 bg-white p-3.5 rounded-xl border border-slate-200">
-                  <div className="w-6 h-6 rounded-full bg-[#0e4a7b] text-white text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
+                <li className="flex items-start gap-3 bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-700">
+                  <span className="w-5 h-5 rounded-full bg-[#0e4a7b] text-white font-bold flex items-center justify-center flex-shrink-0">
                     3
-                  </div>
-                  <div className="text-xs text-slate-700">
-                    Tap <strong className="font-semibold text-emerald-700">Link a Device</strong> and point your camera at the QR code on the left!
-                  </div>
+                  </span>
+                  <span>Point your camera at this QR code!</span>
                 </li>
               </ol>
 
-              <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5 text-xs text-sky-900 flex items-start gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <strong>End-to-End Secure:</strong> Messages flow directly through your WhatsApp account with full hospital double-booking prevention and doctor schedule lookup.
+              {/* Alternative: Link with Phone Number instead */}
+              <div className="mt-4 pt-4 border-t border-slate-200">
+                <div className="text-xs font-bold text-slate-800 mb-1 flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-sky-600" /> Prefer 8-digit Pairing Code instead of Camera?
                 </div>
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Enter your phone number with country code (e.g. <code>919876543210</code>) to link without scanning.
+                </p>
+                <form onSubmit={handleRequestPairingCode} className="flex gap-2">
+                  <input
+                    type="tel"
+                    value={phoneInput}
+                    onChange={(e) => setPhoneInput(e.target.value)}
+                    placeholder="919876543210"
+                    className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0e4a7b]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={submittingPhone}
+                    className="px-3.5 py-2 bg-[#0e4a7b] hover:bg-[#135d96] text-white text-xs font-bold rounded-lg transition disabled:opacity-50"
+                  >
+                    {submittingPhone ? 'Requesting...' : 'Get Code'}
+                  </button>
+                </form>
+                {phoneMessage && (
+                  <p className="text-[11px] text-sky-700 mt-1.5 font-medium">{phoneMessage}</p>
+                )}
               </div>
             </div>
           </div>
@@ -215,46 +307,9 @@ export default function WhatsAppWebPage() {
               <span>npm run whatsapp:web</span>
               <span className="text-[10px] text-slate-400 uppercase font-sans">Command</span>
             </div>
-
-            <p className="text-[11px] text-slate-400">
-              Once you start the command, this page will automatically refresh with your scan code.
-            </p>
           </div>
         </div>
       )}
-
-      {/* Feature Highlights Grid */}
-      <div className="grid sm:grid-cols-3 gap-4 pt-4">
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-          <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center mb-2.5">
-            <Smartphone className="w-4 h-4" />
-          </div>
-          <div className="text-xs font-bold text-slate-900">Zero Meta Approval</div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            No business verification or Facebook developer registration needed. Link immediately.
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-          <div className="w-8 h-8 rounded-lg bg-[#0e4a7b]/10 text-[#0e4a7b] flex items-center justify-center mb-2.5">
-            <MessageSquare className="w-4 h-4" />
-          </div>
-          <div className="text-xs font-bold text-slate-900">Bilingual 7-Option Flow</div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            Exact Bengali and English welcome message with doctor rosters and 15-min booking slots.
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-          <div className="w-8 h-8 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center mb-2.5">
-            <ShieldCheck className="w-4 h-4" />
-          </div>
-          <div className="text-xs font-bold text-slate-900">Auto Reconnection</div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            Credentials persist in your local session. Reconnects seamlessly after restarts.
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
