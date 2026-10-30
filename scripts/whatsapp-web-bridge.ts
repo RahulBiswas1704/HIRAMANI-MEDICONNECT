@@ -75,32 +75,50 @@ async function startWhatsAppWebBridge() {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // If pairing code mode is requested and device not registered yet
-  if (isPairingCodeMode) {
-    setTimeout(async () => {
-      try {
-        console.log(`\n📲 Requesting 8-character Pairing Code for +${targetPhoneNumber}...`);
-        const code = await sock.requestPairingCode(targetPhoneNumber);
-        console.log('\n=============================================================');
-        console.log(`🔑 WHATSAPP PAIRING CODE: ${code}`);
-        console.log('=============================================================');
-        console.log('1. Open WhatsApp on your phone');
-        console.log('2. Tap Settings (or ⋮) -> Linked Devices -> Link a Device');
-        console.log('3. Tap "Link with phone number instead" at the bottom');
-        console.log(`4. Enter this 8-character code: ${code}`);
-        console.log('=============================================================\n');
+  const requestPairing = async (phone: string) => {
+    try {
+      const clean = phone.replace(/\D/g, '');
+      console.log(`\n📲 Requesting 8-character Pairing Code for +${clean}...`);
+      const code = await sock.requestPairingCode(clean);
+      console.log('\n=============================================================');
+      console.log(`🔑 WHATSAPP PAIRING CODE: ${code}`);
+      console.log('=============================================================');
+      console.log('1. Open WhatsApp on your phone');
+      console.log('2. Tap Settings (or ⋮) -> Linked Devices -> Link a Device');
+      console.log('3. Tap "Link with phone number instead" at the bottom');
+      console.log(`4. Enter this 8-character code: ${code}`);
+      console.log('=============================================================\n');
 
-        updateStatus({
-          status: 'pairing_code',
-          pairingCode: code,
-          targetPhone: targetPhoneNumber,
-          message: `Enter code ${code} in WhatsApp on your phone`,
-        });
-      } catch (err) {
-        console.error('Failed to request pairing code:', err);
-      }
-    }, 3000);
+      updateStatus({
+        status: 'pairing_code',
+        pairingCode: code,
+        targetPhone: clean,
+        message: `Enter code ${code} in WhatsApp on your phone`,
+      });
+    } catch (err) {
+      console.error('Failed to request pairing code:', err);
+    }
+  };
+
+  // If pairing code mode was requested on startup
+  if (isPairingCodeMode) {
+    setTimeout(() => requestPairing(targetPhoneNumber), 3000);
   }
+
+  // Watch for dynamic pairing requests submitted via the web dashboard
+  let lastHandledRequest = '';
+  setInterval(async () => {
+    if (fs.existsSync(REQUEST_FILE) && !state.creds.registered) {
+      try {
+        const raw = fs.readFileSync(REQUEST_FILE, 'utf8');
+        const req = JSON.parse(raw);
+        if (req.phone && req.requestedAt !== lastHandledRequest) {
+          lastHandledRequest = req.requestedAt;
+          await requestPairing(req.phone);
+        }
+      } catch (_) {}
+    }
+  }, 1000);
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
